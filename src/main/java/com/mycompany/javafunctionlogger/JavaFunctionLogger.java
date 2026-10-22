@@ -36,6 +36,12 @@ public class JavaFunctionLogger implements Callable<Integer> {
     @Option(names = {"-t", "--timing"}, description = "Inject execution time measurement at method entry.")
     private boolean includeTiming = false;
 
+    @Option(names = {"-b", "--backup"}, description = "Create a .bak backup file before modifying files.")
+    private boolean backup = false;
+
+    @Option(names = {"-e", "--exclude"}, description = "Regular expression for file paths to exclude from instrumentation.")
+    private String excludeRegex = null;
+
     @Option(names = {"-v", "--verbose"}, description = "Enable verbose console logging.")
     private boolean verbose = false;
 
@@ -52,6 +58,10 @@ public class JavaFunctionLogger implements Callable<Integer> {
         System.out.println("🔍 Scanning directory: " + rootPath);
         System.out.println("⚙️  Mode: " + (dryRun ? "DRY-RUN (No files will be modified)" : "LIVE MUTATION"));
         System.out.println("⏱️  Execution Timing: " + (includeTiming ? "ENABLED" : "DISABLED"));
+        System.out.println("💾 File Backup (.bak): " + (backup ? "ENABLED" : "DISABLED"));
+        if (excludeRegex != null) {
+            System.out.println("🚫 Exclusion Filter: " + excludeRegex);
+        }
         System.out.println("------------------------------------------------------------");
 
         if (!Files.exists(rootPath) || !Files.isDirectory(rootPath)) {
@@ -67,10 +77,11 @@ public class JavaFunctionLogger implements Callable<Integer> {
             stream.filter(Files::isRegularFile)
                   .filter(p -> p.toString().endsWith(".java"))
                   .filter(p -> !p.toString().contains("target") && !p.toString().contains(".git"))
+                  .filter(p -> excludeRegex == null || !p.toString().matches(excludeRegex))
                   .forEach(filePath -> {
                       totalFiles[0]++;
                       try {
-                          AstInstrumenter.InstrumentationResult res = AstInstrumenter.instrumentFile(filePath, dryRun, includeTiming);
+                          AstInstrumenter.InstrumentationResult res = AstInstrumenter.instrumentFile(filePath, dryRun, includeTiming, backup);
                           if (res.methodsInstrumented > 0) {
                               modifiedFiles[0]++;
                               totalMethods[0] += res.methodsInstrumented;
