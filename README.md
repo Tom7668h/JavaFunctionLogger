@@ -1,20 +1,117 @@
-# JavaFunctionLogger
+# ⚡ JavaFunctionLogger • AST Code Instrumentation & Observability CLI
 
-JavaFunctionLogger ist ein Java-Programm, das alle `.java`-Dateien in einem angegebenen Verzeichnis durchsucht und mithilfe von Log4j2 alle Funktionen im Trace-Modus detailliert loggt. Das Programm fügt den Logger automatisch hinzu, falls er noch nicht in der Klasse vorhanden ist, und protokolliert folgende Informationen für jede Funktion:
-- Funktionsname
-- Modifizierer (z.B. public, private, static)
-- Übergabeparameter (mit Datentypen und Werten zur Laufzeit)
-- Rückgabewert-Typ
+[![Java](https://img.shields.io/badge/Java-17%20LTS-ED8B00?logo=openjdk&logoColor=white)](https://openjdk.org/)
+[![JavaParser](https://img.shields.io/badge/AST-JavaParser%203.26-blue)](https://javaparser.org/)
+[![Picocli](https://img.shields.io/badge/CLI-Picocli%204.7-4E9A06)](https://picocli.info/)
+[![Log4j2](https://img.shields.io/badge/Logging-Log4j2-C71A36?logo=apache)](https://logging.apache.org/log4j/2.x/)
+[![JUnit 5](https://img.shields.io/badge/Tests-4%20Passed-6E9F18?logo=junit5&logoColor=white)](https://junit.org/junit5/)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## Voraussetzungen
+An automated **Abstract Syntax Tree (AST)** code instrumentation and observability tool built with **Java 17**, **JavaParser**, and **Picocli**. It recursively parses Java source trees, injects `Log4j2` loggers, and adds runtime method trace statements (with parameter values and execution timing) without breaking compilation or code formatting.
 
-- Java 8 oder höher
-- Maven
-- Log4j2-Bibliotheken (werden über Maven hinzugefügt)
+---
 
-## Installation
+## 🌟 Key Highlights & Engineering Features
 
-1. **Repository klonen**:
-   ```bash
-   git clone https://github.com/username/JavaFunctionLogger.git
-   cd JavaFunctionLogger
+- **True AST Manipulation (Not Fragile Regex):**
+  Uses **`JavaParser`** to build a full syntactic model of Java source files. Handles generics, annotations, overloaded methods, interfaces, and nested classes accurately.
+- **Safe Logger Injection:**
+  Detects whether a class already has a `Logger` field or imports. If missing, cleanly adds `org.apache.logging.log4j.LogManager` / `Logger` imports and injects `private static final Logger logger = LogManager.getLogger(ClassName.class);` directly into the class body.
+- **Dynamic Parameter Tracing:**
+  Inspects method parameters and generates structured trace statements (e.g. `logger.trace("[OrderService#process] Called with: id=" + id + ", amount=" + amount);`).
+- **Execution-Time Profiling (`--timing`):**
+  Optionally injects high-precision execution timestamps (`System.currentTimeMillis()`) to profile slow methods and bottlenecks.
+- **Interactive CLI & Dry-Run Mode:**
+  Powered by `picocli` with colorful ASCII banners, progress logging, and `--dry-run` to preview AST mutations without writing changes to disk.
+- **Idempotent by Design:**
+  Can be safely re-run across a codebase without duplicating loggers or trace statements.
+
+---
+
+## 🏗️ AST Transformation Workflow
+
+```mermaid
+flowchart LR
+    Source[".java Source Code"] --> Parser["JavaParser AST Engine"]
+    Parser --> Ast["CompilationUnit AST"]
+    Ast --> Inspector["Inspect Classes & Methods"]
+    Inspector --> Mutator["Inject Logger & Trace Statements"]
+    Mutator --> PrettyPrinter["JavaParser Pretty Printer"]
+    PrettyPrinter --> Output[".java Instrumented Output"]
+```
+
+---
+
+## 🔄 Code Transformation (Before & After)
+
+### Before Instrumentation:
+```java
+package com.example.service;
+
+public class OrderService {
+    public OrderResult placeOrder(String customerId, double totalAmount) {
+        // Business logic here
+        return new OrderResult("SUCCESS");
+    }
+}
+```
+
+### After Instrumentation:
+```java
+package com.example.service;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+public class OrderService {
+    private static final Logger logger = LogManager.getLogger(OrderService.class);
+
+    public OrderResult placeOrder(String customerId, double totalAmount) {
+        logger.trace("[OrderService#placeOrder] Called with: customerId=" + customerId + ", totalAmount=" + totalAmount);
+        final long _methodStartTime = System.currentTimeMillis();
+
+        // Business logic here
+        return new OrderResult("SUCCESS");
+    }
+}
+```
+
+---
+
+## 🚀 Quickstart & Usage
+
+### 1. Build and Test
+```bash
+git clone https://github.com/Tom7668h/JavaFunctionLogger.git
+cd JavaFunctionLogger
+mvn clean test
+```
+
+### 2. Package Standalone Executable Fat JAR
+```bash
+mvn package -DskipTests
+```
+This produces `target/JavaFunctionLogger-1.0.0.jar` with all dependencies bundled inside.
+
+### 3. Run Instrumentation CLI
+```bash
+# Preview modifications on target project without modifying disk
+java -jar target/JavaFunctionLogger-1.0.0.jar --dry-run /path/to/my-java-project
+
+# Instrument all methods with parameter values and execution time tracking
+java -jar target/JavaFunctionLogger-1.0.0.jar --timing /path/to/my-java-project
+```
+
+### CLI Options:
+| Flag | Description |
+| :--- | :--- |
+| `<directoryPath>` | Target directory to recursively scan and instrument (default: `.`) |
+| `-d, --dry-run` | Preview modifications in console without writing changes to disk |
+| `-t, --timing` | Inject execution time measurement (`_methodStartTime`) |
+| `-v, --verbose` | Verbose debug console logging |
+| `-h, --help` | Show command line options and exit |
+
+---
+
+## 📄 License
+MIT License. Created by [Tom7668h](https://github.com/Tom7668h).

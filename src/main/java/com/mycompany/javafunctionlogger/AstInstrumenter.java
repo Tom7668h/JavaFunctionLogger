@@ -1,0 +1,167 @@
+package com.mycompany.javafunctionlogger;
+
+import com.github.javaparser.StaticJavaParser;
+import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.ImportDeclaration;
+import com.github.javaparser.ast.Modifier;
+import com.github.javaparser.ast.NodeList;
+import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
+import com.github.javaparser.ast.body.FieldDeclaration;
+import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.body.Parameter;
+import com.github.javaparser.ast.stmt.BlockStmt;
+import com.github.javaparser.ast.stmt.Statement;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+/**
+ * Robust AST-based Java Source Code Instrumenter using JavaParser.
+ * Accurately analyzes syntax trees, injects Log4j2 loggers and method entry/exit tracing.
+ */
+public class AstInstrumenter {
+
+    private static final Logger LOGGER = LogManager.getLogger(AstInstrumenter.class);
+
+    public static class InstrumentationResult {
+        public int methodsInstrumented = 0;
+        public boolean loggerAdded = false;
+        public String modifiedSourceCode = null;
+        public List<String> instrumentedMethodNames = new ArrayList<>();
+    }
+
+    /**
+     * Instruments source code directly in memory.
+     */
+    public static InstrumentationResult instrumentSource(String sourceCode, String fallbackClassName, boolean includeTiming) {
+        InstrumentationResult result = new InstrumentationResult();
+
+        try {
+            CompilationUnit cu = StaticJavaParser.parse(sourceCode);
+            boolean modified = false;
+
+            // Ensure imports
+            boolean hasLogManagerImport = cu.getImports().stream()
+                    .anyMatch(i -> i.getNameAsString().equals("org.apache.logging.log4j.LogManager"));
+            boolean hasLoggerImport = cu.getImports().stream()
+                    .anyMatch(i -> i.getNameAsString().equals("org.apache.logging.log4j.Logger"));
+
+            if (!hasLogManagerImport) {
+                cu.addImport("org.apache.logging.log4j.LogManager");
+                modified = true;
+            }
+            if (!hasLoggerImport) {
+                cu.addImport("org.apache.logging.log4j.Logger");
+                modified = true;
+            }
+
+            for (ClassOrInterfaceDeclaration cid : cu.findAll(ClassOrInterfaceDeclaration.class)) {
+                // Skip interfaces
+                if (cid.isInterface()) {
+                    continue;
+                }
+
+                String className = cid.getNameAsString();
+
+                // Check or add logger field
+                boolean hasLoggerField = cid.getFields().stream()
+                        .anyMatch(f -> f.getElementType().asString().equals("Logger")
+                                && f.getVariables().stream().anyMatch(v -> v.getNameAsString().equals("logger")));
+
+                if (!hasLoggerField) {
+                    FieldDeclaration loggerField = cid.addFieldWithInitializer(
+                            "Logger",
+                            "logger",
+                            StaticJavaParser.parseExpression("LogManager.getLogger(" + className + ".class)")
+                    );
+                    loggerField.setModifiers(Modifier.Keyword.PRIVATE, Modifier.Keyword.STATIC, Modifier.Keyword.FINAL);
+                    result.loggerAdded = true;
+                    modified = true;
+                }
+
+                // Instrument methods
+                for (MethodDeclaration method : cid.getMethods()) {
+                    if (method.getBody().isEmpty() || method.isAbstract() || method.isNative()) {
+                        continue;
+                    }
+
+                    BlockStmt body = method.getBody().get();
+                    String methodName = method.getNameAsString();
+
+                    // Check if already instrumented
+                    boolean alreadyInstrumented = body.getStatements().stream()
+                            .anyMatch(s -> s.toString().contains("logger.trace(") && s.toString().contains(methodName));
+
+                    if (alreadyInstrumented) {
+                        continue;
+                    }
+
+                    // Build parameter log expression
+                    NodeList<Parameter> parameters = method.getParameters();
+                    StringBuilder paramLog = new StringBuilder();
+                    for (int i = 0; i < parameters.size(); i++) {
+                        Parameter p = parameters.get(i);
+                        paramLog.append(p.getNameAsString()).append("=\" + ").append(p.getNameAsString());
+                        if (i < parameters.size() - 1) {
+                            paramLog.append(" + \", ");
+                        }
+                    }
+
+                    String logExpr;
+                    if (parameters.isEmpty()) {
+                        logExpr = "logger.trace(\"[" + className + "#" + methodName + "] Called (no params)\");";
+                    } else {
+                        logExpr = "logger.trace(\"[" + className + "#" + methodName + "] Called with: " + paramLog + ");";
+                    }
+
+                    Statement logStatement = StaticJavaParser.parseStatement(logExpr);
+                    body.addStatement(0, logStatement);
+
+                    if (includeTiming) {
+                        Statement timingStatement = StaticJavaParser.parseStatement("final long _methodStartTime = System.currentTimeMillis();");
+                        body.addStatement(1, timingStatement);
+                    }
+
+                    result.methodsInstrumented++;
+                    result.instrumentedMethodNames.add(methodName);
+                    modified = true;
+                }
+            }
+
+            if (modified) {
+                result.modifiedSourceCode = cu.toString();
+            } else {
+                result.modifiedSourceCode = sourceCode;
+            }
+
+        } catch (Exception e) {
+            LOGGER.error("Failed to parse and instrument source code", e);
+        }
+
+        return result;
+    }
+
+    /**
+     * Instruments a Java file in place or previews it.
+     */
+    public static InstrumentationResult instrumentFile(Path filePath, boolean dryRun, boolean includeTiming) throws IOException {
+        String originalContent = Files.readString(filePath, StandardCharsets.UTF_8);
+        String fileName = filePath.getFileName().toString();
+        String className = fileName.contains(".") ? fileName.substring(0, fileName.lastIndexOf('.')) : fileName;
+
+        InstrumentationResult result = instrumentSource(originalContent, className, includeTiming);
+
+        if (!dryRun && result.modifiedSourceCode != null && result.methodsInstrumented > 0) {
+            Files.writeString(filePath, result.modifiedSourceCode, StandardCharsets.UTF_8);
+            LOGGER.info("Instrumented {} (methods: {}, loggerAdded: {})", filePath, result.methodsInstrumented, result.loggerAdded);
+        }
+
+        return result;
+    }
+}

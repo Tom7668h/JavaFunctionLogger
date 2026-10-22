@@ -1,91 +1,113 @@
-/*
- * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
- */
-
 package com.mycompany.javafunctionlogger;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.concurrent.Callable;
+import java.util.stream.Stream;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.Parameters;
 
-public class JavaFunctionLogger {
+/**
+ * Enterprise JavaFunctionLogger CLI
+ */
+@Command(
+    name = "java-function-logger",
+    mixinStandardHelpOptions = true,
+    version = "JavaFunctionLogger 1.0.0",
+    description = "Automatically inspects Java source trees, injects Log4j2 loggers and method trace instrumentation using JavaParser AST."
+)
+public class JavaFunctionLogger implements Callable<Integer> {
 
-    private static final Logger logger = LogManager.getLogger(JavaFunctionLogger.class);
+    private static final Logger LOGGER = LogManager.getLogger(JavaFunctionLogger.class);
+
+    @Parameters(index = "0", description = "Target directory to recursively scan and instrument.", defaultValue = ".")
+    private String directoryPath = ".";
+
+    @Option(names = {"-d", "--dry-run"}, description = "Preview modifications without saving changes to disk.")
+    private boolean dryRun = false;
+
+    @Option(names = {"-t", "--timing"}, description = "Inject execution time measurement at method entry.")
+    private boolean includeTiming = false;
+
+    @Option(names = {"-v", "--verbose"}, description = "Enable verbose console logging.")
+    private boolean verbose = false;
 
     public static void main(String[] args) {
-        if (args.length != 1) {
-            logger.error("Bitte geben Sie das zu durchsuchende Verzeichnis als Argument an.");
-            return;
+        int exitCode = new CommandLine(new JavaFunctionLogger()).execute(args);
+        System.exit(exitCode);
+    }
+
+    @Override
+    public Integer call() {
+        printBanner();
+
+        Path rootPath = Paths.get(directoryPath).toAbsolutePath().normalize();
+        System.out.println("🔍 Scanning directory: " + rootPath);
+        System.out.println("⚙️  Mode: " + (dryRun ? "DRY-RUN (No files will be modified)" : "LIVE MUTATION"));
+        System.out.println("⏱️  Execution Timing: " + (includeTiming ? "ENABLED" : "DISABLED"));
+        System.out.println("------------------------------------------------------------");
+
+        if (!Files.exists(rootPath) || !Files.isDirectory(rootPath)) {
+            System.err.println("❌ Error: Directory does not exist or is not a directory: " + rootPath);
+            return 1;
         }
-        String directoryPath = args[0];
-        try {
-            searchJavaFiles(directoryPath);
+
+        int[] totalFiles = {0};
+        int[] modifiedFiles = {0};
+        int[] totalMethods = {0};
+
+        try (Stream<Path> stream = Files.walk(rootPath)) {
+            stream.filter(Files::isRegularFile)
+                  .filter(p -> p.toString().endsWith(".java"))
+                  .filter(p -> !p.toString().contains("target") && !p.toString().contains(".git"))
+                  .forEach(filePath -> {
+                      totalFiles[0]++;
+                      try {
+                          AstInstrumenter.InstrumentationResult res = AstInstrumenter.instrumentFile(filePath, dryRun, includeTiming);
+                          if (res.methodsInstrumented > 0) {
+                              modifiedFiles[0]++;
+                              totalMethods[0] += res.methodsInstrumented;
+                              System.out.println("  ✓ [" + (dryRun ? "PREVIEW" : "MODIFIED") + "] " + rootPath.relativize(filePath) 
+                                      + " (" + res.methodsInstrumented + " methods: " + String.join(", ", res.instrumentedMethodNames) + ")");
+                          } else if (verbose) {
+                              System.out.println("  - [SKIPPED] " + rootPath.relativize(filePath) + " (no uninstrumented methods)");
+                          }
+                      } catch (Exception e) {
+                          System.err.println("  ✗ [ERROR] Failed to process " + filePath + ": " + e.getMessage());
+                      }
+                  });
+
+            System.out.println("------------------------------------------------------------");
+            System.out.println("📊 Instrumentation Summary:");
+            System.out.println("   • Total .java Files Scanned: " + totalFiles[0]);
+            System.out.println("   • Files Modified / Instrumented: " + modifiedFiles[0]);
+            System.out.println("   • Total Methods Injected: " + totalMethods[0]);
+            System.out.println(dryRun ? "✨ Dry-run finished. No disk changes made." : "✅ All files instrumented successfully.");
+
+            return 0;
         } catch (IOException e) {
-            logger.error("Fehler beim Durchsuchen des Verzeichnisses: ", e);
+            System.err.println("Fatal I/O Error: " + e.getMessage());
+            return 1;
         }
     }
 
-    private static void searchJavaFiles(String directoryPath) throws IOException {
-        Files.walk(Paths.get(directoryPath))
-                .filter(Files::isRegularFile)
-                .filter(path -> path.toString().endsWith(".java"))
-                .forEach(JavaFunctionLogger::processJavaFile);
-    }
-
-    private static void processJavaFile(Path filePath) {
-        try {
-            List<String> lines = Files.readAllLines(filePath);
-            String className = extractClassName(filePath);
-            ensureLogger(lines, className);
-            analyzeFunctions(lines, className);
-        } catch (IOException e) {
-            logger.error("Fehler beim Verarbeiten der Datei: " + filePath, e);
-        }
-    }
-
-    private static void ensureLogger(List<String> lines, String className) throws IOException {
-        boolean hasLogger = lines.stream().anyMatch(line -> line.contains("Logger logger = LogManager.getLogger"));
-        if (!hasLogger) {
-            lines.add(1, "import org.apache.logging.log4j.LogManager;");
-            lines.add(2, "import org.apache.logging.log4j.Logger;");
-            lines.add(3, "private static final Logger logger = LogManager.getLogger(" + className + ".class);");
-            Files.write(Paths.get(className + ".java"), lines);
-            logger.info("Logger zu " + className + " hinzugefügt.");
-        }
-    }
-
-    private static String extractClassName(Path filePath) {
-        String fileName = filePath.getFileName().toString();
-        return fileName.substring(0, fileName.lastIndexOf("."));
-    }
-
-    private static void analyzeFunctions(List<String> lines, String className) {
-        Pattern methodPattern = Pattern.compile("(public|protected|private|static|\\s)+\\s+[\\w<>\\[\\]]+\\s+(\\w+)\\s*\\(([^)]*)\\)");
-        for (String line : lines) {
-            Matcher matcher = methodPattern.matcher(line);
-            if (matcher.find()) {
-                String modifiers = matcher.group(1);
-                String returnType = matcher.group(2);
-                String methodName = matcher.group(3);
-                String parameters = matcher.group(4);
-                
-                logFunctionDetails(className, modifiers, returnType, methodName, parameters);
-            }
-        }
-    }
-
-    private static void logFunctionDetails(String className, String modifiers, String returnType, String methodName, String parameters) {
-        logger.trace("Class: " + className);
-        logger.trace("Function: " + methodName);
-        logger.trace("Modifiers: " + modifiers);
-        logger.trace("Return Type: " + returnType);
-        logger.trace("Parameters: " + parameters);
+    private void printBanner() {
+        System.out.println("""
+           ___                  ______                 _   _               _                               
+          |_  |                 |  ___|               | | (_)             | |                              
+            | | __ ___   ____ _ | |_ _   _ _ __   ___ | |_ _  ___  _ __   | |     ___   __ _  __ _  ___ _ __ 
+            | |/ _` \\ \\ / / _` ||  _| | | | '_ \\ / __|| __| |/ _ \\| '_ \\  | |    / _ \\ / _` |/ _` |/ _ \\ '__|
+        /\\__/ / (_| |\\ V / (_| || | | |_| | | | | (__ | |_| | (_) | | | | | |___| (_) | (_| | (_| |  __/ |   
+        \\____/ \\__,_| \\_/ \\__,_|\\_|  \\__,_|_| |_|\\___| \\__|_|\\___/|_| |_| \\_____/\\___/ \\__, |\\__, |\\___|_|   
+                                                                                        __/ | __/ |          
+                                                                                       |___/ |___/           
+        """);
     }
 }
